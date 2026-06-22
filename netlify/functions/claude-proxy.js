@@ -4,12 +4,16 @@ exports.handler = async (event) => {
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
+  console.log('API key presente:', !!apiKey, 'longitud:', apiKey ? apiKey.length : 0);
+
   if (!apiKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Falta configurar ANTHROPIC_API_KEY en Netlify.' }) };
+    return { statusCode: 500, body: JSON.stringify({ error: 'Falta ANTHROPIC_API_KEY' }) };
   }
 
   try {
     const body = JSON.parse(event.body);
+    console.log('Llamando a Anthropic...');
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -23,9 +27,12 @@ exports.handler = async (event) => {
         messages: body.messages
       })
     });
+
     const data = await response.json();
+    console.log('Respuesta status:', response.status, 'data:', JSON.stringify(data).slice(0, 200));
     return { statusCode: response.status, body: JSON.stringify(data) };
   } catch (err) {
+    console.log('Error:', err.message);
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };
