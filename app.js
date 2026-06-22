@@ -41,7 +41,7 @@ async function loadGroups() {
     let morosos = 0;
     for (const c of cs.docs) {
       const ps = await getDocs(collection(db, 'grupos', d.id, 'clientes', c.id, 'pagos'));
-      const pagos = ps.docs.map(p => ({ monto: p.data().monto, fecha: p.data().fecha.toDate() }));
+      const pagos = ps.docs.map(p => ({ monto: p.data().monto, fecha: p.data().fecha.toDate(), numeroPago: p.data().numeroPago ?? null, esAnticipo: p.data().esAnticipo ?? false }));
       const est = calcularEstadoCliente({ total: c.data().total, plazoSemanas: data.plazoSemanas||10 }, pagos, { multaPorDia: data.multaPorDia||35 });
       if (est.estado === 'atrasado') morosos++;
     }
@@ -58,7 +58,7 @@ async function openGroup(gid) {
   const clientes = [];
   for (const c of cs.docs) {
     const ps = await getDocs(query(collection(db, 'grupos', gid, 'clientes', c.id, 'pagos'), orderBy('fecha')));
-    const pagos = ps.docs.map(p => ({ id: p.id, monto: p.data().monto, fecha: p.data().fecha.toDate() }));
+    const pagos = ps.docs.map(p => ({ id: p.id, monto: p.data().monto, fecha: p.data().fecha.toDate(), numeroPago: p.data().numeroPago ?? null, esAnticipo: p.data().esAnticipo ?? false, hora: p.data().hora ?? '', cuenta: p.data().cuenta ?? '' }));
     const est = calcularEstadoCliente({ total: c.data().total, plazoSemanas: grupo.plazoSemanas||10 }, pagos, { multaPorDia: grupo.multaPorDia||35 });
     clientes.push({ id: c.id, ...c.data(), pagos, est });
   }
@@ -117,10 +117,12 @@ async function saveGroup(data, gid) {
   set({ view: 'groups' });
 }
 
-async function savePago(gid, cid, monto, fechaStr) {
+async function savePago(gid, cid, monto, fechaStr, numeroPago, esAnticipo, hora, cuenta) {
   set({ loading: true });
   await addDoc(collection(db, 'grupos', gid, 'clientes', cid, 'pagos'), {
     monto, fecha: Timestamp.fromDate(new Date(fechaStr + 'T12:00:00')),
+    numeroPago: numeroPago ?? null, esAnticipo: !!esAnticipo,
+    hora: hora || '', cuenta: cuenta || '',
     registradoPor: S.user.email, creadoEn: serverTimestamp()
   });
   showToast('Pago guardado ✓');
@@ -382,7 +384,9 @@ function rClient() {
       const row = el('div', { className: 'history-row' });
       const delBtn = el('button', { className: 'del-btn' }, '×');
       delBtn.onclick = (e) => { e.stopPropagation(); set({ modal: { type: 'confirmDeletePago', data: { pago: p, clienteId: c.id } } }); };
-      row.innerHTML = `<div><div class="hl">Pago</div><div class="hd">${formatFecha(p.fecha)}</div></div><div style="display:flex;align-items:center;gap:10px;"><div class="hr num">${formatMoney(p.monto)}</div></div>`;
+      const pagoLabel = p.esAnticipo ? 'Anticipo' : p.numeroPago ? `Pago #${p.numeroPago}` : 'Pago';
+      const metaExtra = [p.hora, p.cuenta].filter(Boolean).join(' · ');
+      row.innerHTML = `<div><div class="hl">${pagoLabel}</div><div class="hd">${formatFecha(p.fecha)}${metaExtra ? ' · ' + metaExtra : ''}</div></div><div style="display:flex;align-items:center;gap:10px;"><div class="hr num">${formatMoney(p.monto)}</div></div>`;
       row.querySelector('div:last-child').appendChild(delBtn);
       histCard.appendChild(row);
     });
@@ -523,13 +527,27 @@ function rModal() {
         }
 
         if (pagoState.modo === 'manual') {
-          body.innerHTML += `<div class="field"><label>Monto</label><input type="number" id="mm" placeholder="0"></div><div class="field"><label>Fecha</label><input type="date" id="mf" value="${new Date().toISOString().slice(0,10)}"></div>`;
+          body.innerHTML += `
+            <div class="gap-row">
+              <div class="field" style="flex:2"><label>Monto</label><input type="number" id="mm" placeholder="0"></div>
+              <div class="field" style="flex:1"><label>Pago #</label><input type="number" id="mn" placeholder="1" min="1"></div>
+            </div>
+            <div class="field"><label>¿Es anticipo?</label>
+              <select id="ma"><option value="no">No — es pago numerado</option><option value="si">Sí — es anticipo</option></select>
+            </div>
+            <div class="field"><label>Fecha</label><input type="date" id="mf" value="${new Date().toISOString().slice(0,10)}"></div>
+            <div class="field"><label>Hora (opcional)</label><input type="time" id="mh"></div>
+            <div class="field"><label>Cuenta (opcional)</label><input type="text" id="mc2" placeholder="Ej. BBVA 1234"></div>`;
           const btn = el('button', { className: 'btn btn-primary btn-block' }, 'Continuar');
           btn.onclick = () => {
             const m = parseFloat(body.querySelector('#mm').value);
             const f = body.querySelector('#mf').value;
+            const n = parseInt(body.querySelector('#mn').value) || null;
+            const esAnticipo = body.querySelector('#ma').value === 'si';
+            const hora = body.querySelector('#mh').value;
+            const cuenta = body.querySelector('#mc2').value;
             if (!m || m <= 0) { showToast('Ingresa un monto'); return; }
-            pagoState.propuesta = { monto: m, fecha: f, confianza: 'manual', notas: '' };
+            pagoState.propuesta = { monto: m, fecha: f, confianza: 'manual', notas: '', numeroPago: esAnticipo ? null : n, esAnticipo, hora, cuenta };
             renderPayModal();
           };
           body.appendChild(btn);
@@ -543,18 +561,33 @@ function rModal() {
           conf.textContent = `${p.confianza==='alta'?'✅ Confianza alta':p.confianza==='media'?'⚠️ Confianza media — revisa':'⚠️ Confianza baja — revisa con cuidado'}: ${p.notas||''}`;
           body.appendChild(conf);
         }
-        body.innerHTML += `<div class="field"><label>Monto</label><input type="number" id="cm" value="${p.monto??''}"></div><div class="field"><label>Fecha</label><input type="date" id="cf" value="${p.fecha||new Date().toISOString().slice(0,10)}"></div>`;
+        const p_esAnticipo = p.esAnticipo ?? false;
+        body.innerHTML += `
+          <div class="gap-row">
+            <div class="field" style="flex:2"><label>Monto</label><input type="number" id="cm" value="${p.monto??''}"></div>
+            <div class="field" style="flex:1"><label>Pago #</label><input type="number" id="cn" value="${p.numeroPago??''}" placeholder="1"></div>
+          </div>
+          <div class="field"><label>¿Es anticipo?</label>
+            <select id="ca"><option value="no" ${!p_esAnticipo?'selected':''}>No — pago numerado</option><option value="si" ${p_esAnticipo?'selected':''}>Sí — anticipo</option></select>
+          </div>
+          <div class="field"><label>Fecha</label><input type="date" id="cf" value="${p.fecha||new Date().toISOString().slice(0,10)}"></div>
+          <div class="field"><label>Hora (opcional)</label><input type="time" id="ch" value="${p.hora||''}"></div>
+          <div class="field"><label>Cuenta (opcional)</label><input type="text" id="cc" value="${p.cuenta||''}" placeholder="Ej. BBVA 1234"></div>`;
         if (p.nombreDetectado) body.innerHTML += `<div class="hint">Nombre en comprobante: <strong>${p.nombreDetectado}</strong></div>`;
 
         const confirmBtn = el('button', { className: 'btn btn-primary btn-block', style: 'margin-top:12px;' }, 'Confirmar y guardar pago');
         confirmBtn.onclick = async () => {
           const monto = parseFloat(body.querySelector('#cm').value);
           const fecha = body.querySelector('#cf').value;
+          const esAnticipo = body.querySelector('#ca').value === 'si';
+          const numeroPago = esAnticipo ? null : (parseInt(body.querySelector('#cn').value) || null);
+          const hora = body.querySelector('#ch').value;
+          const cuenta = body.querySelector('#cc').value;
           const cid = S.clienteActual ? S.clienteActual.id : pagoState.clienteId;
           if (!cid) { showToast('Selecciona un cliente'); return; }
           if (!monto || monto <= 0) { showToast('Monto inválido'); return; }
           if (!fecha) { showToast('Selecciona una fecha'); return; }
-          await savePago(S.grupoActual.id, cid, monto, fecha);
+          await savePago(S.grupoActual.id, cid, monto, fecha, numeroPago, esAnticipo, hora, cuenta);
         };
         body.appendChild(confirmBtn);
 
