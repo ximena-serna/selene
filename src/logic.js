@@ -72,11 +72,13 @@ export function calcularEstadoCliente(cliente, pagos, params, hoy = new Date()) 
     const cuotasCompletas = Math.floor(totalPagado / cuotaSemanal);
     // La semana N termina el domingo = inicioSemana1 + N*7 - 1
     // Multa empieza el día SIGUIENTE = inicioSemana1 + N*7 (lunes de la semana siguiente)
+    // Multa empieza el LUNES SIGUIENTE a la semana que cerró sin pagar
+    // Si cubrió N cuotas, el lunes de inicio de multa = inicioSemana1 + (N+1)*7
     const fechaInicioMulta = new Date(inicioSemana1);
-    fechaInicioMulta.setDate(fechaInicioMulta.getDate() + cuotasCompletas * 7);
-    // El día de inicio de multa ya cuenta como día 1, por eso sumamos 1 si hoy >= fechaInicioMulta
-    const diffDias = daysBetween(hoyMid, fechaInicioMulta);
-    diasAtraso = diffDias >= 0 ? diffDias + 1 : 0;
+    fechaInicioMulta.setDate(fechaInicioMulta.getDate() + (cuotasCompletas + 1) * 7);
+    const diffMulta = daysBetween(hoyMid, fechaInicioMulta);
+    // Si hoy >= fechaInicioMulta, el primer día ya cuenta como día 1 (diff=0 → 1 día)
+    diasAtraso = diffMulta >= 0 ? diffMulta + 1 : 0;
   }
 
   const multa = diasAtraso > 0 ? diasAtraso * multaPorDia : 0;
