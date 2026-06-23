@@ -221,6 +221,51 @@ function rLogin() {
   return wrap;
 }
 
+// ── SEARCH RESULTS (reusable, called without full re-render) ──────────
+function buildSearchResults(searchQ) {
+  const wrap = el('div');
+  if (!searchQ || searchQ.trim().length === 0) return wrap;
+  const q = searchQ.trim().toLowerCase();
+  const results = [];
+  S.grupos.forEach(g => {
+    g.clientes.forEach(c => {
+      if (c.nombre.toLowerCase().includes(q)||(c.producto||'').toLowerCase().includes(q)) {
+        results.push({grupo:g,cliente:c});
+      }
+    });
+  });
+  const lbl = el('div',{className:'section-label'},`${results.length} resultado${results.length!==1?'s':''}`);
+  wrap.appendChild(lbl);
+  if (results.length===0) {
+    wrap.appendChild(el('div',{className:'empty'},el('div',{className:'eicon'},'🔍'),el('p',null,'No se encontraron clientes.')));
+  } else {
+    const list = el('div',{className:'client-list'});
+    results.forEach(({grupo:g,cliente:c}) => {
+      const row = el('div',{className:'search-result-row'});
+      const dot = c.est.estado==='atrasado'?'dot-alert':c.est.estado==='sin_pagos'?'dot-none':'dot-ok';
+      const color = c.est.estado==='atrasado'?'var(--alert)':'var(--ink)';
+      row.innerHTML=`
+        <span class="status-dot ${dot}"></span>
+        <div class="avatar">${initials(c.nombre)}</div>
+        <div class="client-info">
+          <div class="name">${c.nombre}</div>
+          <div class="search-result-group">${g.nombre} · ${c.producto||''}</div>
+        </div>
+        <div class="client-amount">
+          <div class="val num" style="color:${color}">${c.est.estado==='atrasado'?formatMoney(c.est.multa):formatMoney(c.est.restante)}</div>
+          <div class="lbl">${c.est.estado==='atrasado'?'multa':'restante'}</div>
+        </div>`;
+      row.onclick=()=>{
+        const idx=S.grupos.indexOf(g);
+        set({grupoIdx:idx,clienteId:c.id,view:'client',searchQ:''});
+      };
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+  }
+  return wrap;
+}
+
 // ── GROUPS ─────────────────────────────────────────────────────────────
 function rGroups() {
   const wrap = el('div');
@@ -238,7 +283,20 @@ function rGroups() {
   const searchIcon = el('span',{className:'search-icon'},'🔍');
   const searchInp = el('input',{className:'search-input', placeholder:'Buscar cliente en todos los grupos...'});
   searchInp.value = S.searchQ;
-  searchInp.oninput = e => { S.searchQ = e.target.value; render(); };
+  searchInp.oninput = e => {
+    S.searchQ = e.target.value;
+    // Solo actualiza resultados sin redibujar todo el DOM (evita perder el foco)
+    const resultsContainer = document.getElementById('search-results');
+    if (resultsContainer) {
+      const newResults = buildSearchResults(S.searchQ);
+      resultsContainer.innerHTML = '';
+      resultsContainer.appendChild(newResults);
+    } else {
+      render();
+    }
+  };
+  // Mantener foco si ya estaba activo
+  setTimeout(() => { if (S.searchQ) searchInp.focus(); }, 0);
   swi.appendChild(searchIcon); swi.appendChild(searchInp);
   sw.appendChild(swi);
   wrap.appendChild(sw);
@@ -250,48 +308,11 @@ function rGroups() {
     wrap.appendChild(screen); return wrap;
   }
 
-  // Search results
+  // Search results container (updated in-place on input)
+  const resultsDiv = el('div',{id:'search-results'});
+  resultsDiv.appendChild(buildSearchResults(S.searchQ));
+  screen.appendChild(resultsDiv);
   if (S.searchQ.trim().length > 0) {
-    const q = S.searchQ.trim().toLowerCase();
-    const results = [];
-    S.grupos.forEach(g => {
-      g.clientes.forEach(c => {
-        if (c.nombre.toLowerCase().includes(q) || (c.producto||'').toLowerCase().includes(q)) {
-          results.push({ grupo: g, cliente: c });
-        }
-      });
-    });
-
-    const lbl = el('div',{className:'section-label'},`${results.length} resultado${results.length!==1?'s':''}`);
-    screen.appendChild(lbl);
-
-    if (results.length === 0) {
-      screen.appendChild(el('div',{className:'empty'},el('div',{className:'eicon'},'🔍'),el('p',null,'No se encontraron clientes.')));
-    } else {
-      const list = el('div',{className:'client-list'});
-      results.forEach(({grupo:g, cliente:c}) => {
-        const row = el('div',{className:'search-result-row'});
-        const dot = c.est.estado==='atrasado'?'dot-alert':c.est.estado==='sin_pagos'?'dot-none':'dot-ok';
-        const color = c.est.estado==='atrasado'?'var(--alert)':'var(--ink)';
-        row.innerHTML=`
-          <span class="status-dot ${dot}"></span>
-          <div class="avatar">${initials(c.nombre)}</div>
-          <div class="client-info">
-            <div class="name">${c.nombre}</div>
-            <div class="search-result-group">${g.nombre} · ${c.producto||''}</div>
-          </div>
-          <div class="client-amount">
-            <div class="val num" style="color:${color}">${c.est.estado==='atrasado'?formatMoney(c.est.multa):formatMoney(c.est.restante)}</div>
-            <div class="lbl">${c.est.estado==='atrasado'?'multa':'restante'}</div>
-          </div>`;
-        row.onclick = () => {
-          const idx = S.grupos.indexOf(g);
-          set({ grupoIdx: idx, clienteId: c.id, view: 'client', searchQ: '' });
-        };
-        list.appendChild(row);
-      });
-      screen.appendChild(list);
-    }
     wrap.appendChild(screen);
     return wrap;
   }
