@@ -164,7 +164,7 @@ async function savePago(gid, cid, monto, fechaStr, numeroPago, esAnticipo, hora,
 function render() {
   root.innerHTML = '';
   if (S.toast) root.appendChild(el('div', { className:'toast' }, S.toast));
-  const views = { loading:rLoading, login:rLogin, groups:rGroups, group:rGroup, client:rClient };
+  const views = { loading:rLoading, login:rLogin, groups:rGroups, group:rGroup, client:rClient, ingresos:rIngresos, cobros:rCobros };
   root.appendChild((views[S.view]||rLoading)());
   if (S.modal) root.appendChild(rModal());
 }
@@ -275,7 +275,10 @@ function rGroups() {
   logoutBtn.onclick = () => signOut(auth);
   const addBtn = el('button',{className:'btn btn-white btn-sm'},'+  Grupo');
   addBtn.onclick = () => set({modal:{type:'addGroup'}});
-  wrap.appendChild(topbar('Control de Ahorros', null, [addBtn, logoutBtn]));
+  const ingBtn = el('button',{className:'btn btn-white btn-sm'},'💰');
+  ingBtn.title='Ver ingresos';
+  ingBtn.onclick = () => set({view:'ingresos'});
+  wrap.appendChild(topbar('Control de Ahorros', null, [ingBtn, addBtn, logoutBtn]));
 
   // Search bar
   const sw = el('div',{className:'search-wrap'});
@@ -355,7 +358,10 @@ function rGroup() {
   editBtn.onclick = () => set({modal:{type:'editGroup',data:g}});
   const delBtn = el('button',{className:'btn btn-white btn-sm'},'🗑️');
   delBtn.onclick = () => set({modal:{type:'confirmDeleteGroup',data:g}});
-  wrap.appendChild(topbar(g?.nombre||'', ()=>set({view:'groups'}), [editBtn,delBtn]));
+  const cobrosBtn = el('button',{className:'btn btn-white btn-sm'},'📋');
+  cobrosBtn.title='Cobros masivos';
+  cobrosBtn.onclick = () => set({view:'cobros'});
+  wrap.appendChild(topbar(g?.nombre||'', ()=>set({view:'groups'}), [cobrosBtn,editBtn,delBtn]));
 
   const screen = el('div',{className:'page'});
   if (!g) { wrap.appendChild(screen); return wrap; }
@@ -728,3 +734,120 @@ function rModal() {
 }
 
 render();
+
+// ── INGRESOS ───────────────────────────────────────────────────────────
+function rIngresos() {
+  const wrap = el('div');
+  wrap.appendChild(topbar('💰 Ingresos', () => set({view:'groups'})));
+  const screen = el('div',{className:'page'});
+
+  const totalGeneral = S.grupos.reduce((s,g) =>
+    s + g.clientes.reduce((s2,c) => s2 + c.pagos.reduce((s3,p) => s3 + p.monto, 0), 0), 0);
+  const totalPendiente = S.grupos.reduce((s,g) =>
+    s + g.clientes.reduce((s2,c) => s2 + Math.max(0, c.est.restante), 0), 0);
+  const totalMultas = S.grupos.reduce((s,g) =>
+    s + g.clientes.reduce((s2,c) => s2 + c.est.multa, 0), 0);
+
+  // General summary
+  const sumCard = el('div',{className:'card card-body',style:'margin-bottom:14px;'});
+  sumCard.innerHTML = `
+    <div style="font-weight:700;font-size:15px;margin-bottom:12px;">Resumen general</div>
+    <div class="info-grid" style="grid-template-columns:repeat(3,1fr);">
+      <div class="info-box"><div class="iv num" style="color:var(--ok)">${formatMoney(totalGeneral)}</div><div class="il">Cobrado</div></div>
+      <div class="info-box"><div class="iv num" style="color:var(--accent)">${formatMoney(totalPendiente)}</div><div class="il">Pendiente</div></div>
+      <div class="info-box"><div class="iv num" style="color:var(--alert)">${formatMoney(totalMultas)}</div><div class="il">Multas</div></div>
+    </div>`;
+  screen.appendChild(sumCard);
+
+  // Per group breakdown
+  screen.appendChild(el('div',{className:'section-label'},'Por grupo'));
+
+  const list = el('div',{className:'card',style:'overflow:hidden;'});
+  S.grupos.forEach((g, idx) => {
+    const cobrado = g.clientes.reduce((s,c) => s + c.pagos.reduce((s2,p) => s2 + p.monto, 0), 0);
+    const esperado = g.clientes.reduce((s,c) => s + c.total, 0);
+    const multas = g.clientes.reduce((s,c) => s + c.est.multa, 0);
+    const pct = esperado > 0 ? Math.round((cobrado/esperado)*100) : 0;
+
+    const row = el('div',{style:'padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;'});
+    row.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-weight:600;font-size:14px;">${g.nombre}</div>
+        <div style="font-weight:700;font-size:14px;color:var(--ok);">${formatMoney(cobrado)}</div>
+      </div>
+      <div style="background:var(--line);border-radius:4px;height:5px;margin-bottom:6px;">
+        <div style="background:var(--ok);height:5px;border-radius:4px;width:${pct}%;transition:width 0.3s;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--ink-soft);">
+        <span>${pct}% de ${formatMoney(esperado)}</span>
+        ${multas>0?`<span style="color:var(--alert);">+${formatMoney(multas)} multas</span>`:''}
+      </div>`;
+    row.onclick = () => set({grupoIdx: idx, view:'group'});
+    list.appendChild(row);
+  });
+  screen.appendChild(list);
+  wrap.appendChild(screen);
+  return wrap;
+}
+
+// ── COBROS MASIVOS ─────────────────────────────────────────────────────
+function rCobros() {
+  const g = get.grupo();
+  const wrap = el('div');
+  wrap.appendChild(topbar('📋 Cobros pendientes', () => set({view:'group'})));
+  const screen = el('div',{className:'page'});
+
+  if (!g) { wrap.appendChild(screen); return wrap; }
+
+  const atrasados = g.clientes.filter(c => c.est.estado === 'atrasado');
+  const hoy = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
+
+  if (atrasados.length === 0) {
+    screen.appendChild(el('div',{className:'empty'},
+      el('div',{className:'eicon'},'✅'),
+      el('p',null,'¡Todos al corriente en este grupo!')
+    ));
+    wrap.appendChild(screen);
+    return wrap;
+  }
+
+  // Generate all messages
+  const mensajes = atrasados.map(c => {
+    const est = c.est;
+    return `Hola ${c.nombre.split(' ')[0]} 👋\n\nTe recuerdo que tienes un pago pendiente de tu ahorro:\n\n• Producto: ${c.producto||'tu artículo'}\n• Total pagado: ${formatMoney(est.totalPagado)} de ${formatMoney(c.total)}\n• Días de atraso: ${est.diasAtraso}\n• Multa acumulada: ${formatMoney(est.multa)}\n• Total que debes hoy (${hoy}): ${formatMoney(est.restante)}\n\nPor favor realiza tu pago a la brevedad para evitar más multas ($${g.multaPorDia||35}/día).\n\n¡Gracias! 🙏`;
+  });
+
+  const todosMsg = mensajes.join('\n\n─────────────────────\n\n');
+
+  const copyAllBtn = el('button',{className:'btn btn-primary btn-block',style:'margin-bottom:14px;'},
+    `📋 Copiar todos los mensajes (${atrasados.length})`);
+  copyAllBtn.onclick = () => {
+    navigator.clipboard.writeText(todosMsg);
+    showToast(`${atrasados.length} mensajes copiados ✓`);
+  };
+  screen.appendChild(copyAllBtn);
+
+  screen.appendChild(el('div',{className:'section-label'},`${atrasados.length} clientes atrasados`));
+
+  atrasados.forEach((c, i) => {
+    const card = el('div',{className:'card card-body',style:'margin-bottom:10px;'});
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <div style="font-weight:700;font-size:14px;">${c.nombre}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${c.est.diasAtraso} día(s) · ${formatMoney(c.est.multa)} multa</div>
+        </div>
+        <div style="font-weight:800;font-size:15px;color:var(--alert);">${formatMoney(c.est.restante)}</div>
+      </div>`;
+    const copyBtn = el('button',{className:'btn btn-secondary btn-block btn-sm'},'Copiar mensaje individual');
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(mensajes[i]);
+      showToast(`Mensaje de ${c.nombre.split(' ')[0]} copiado ✓`);
+    };
+    card.appendChild(copyBtn);
+    screen.appendChild(card);
+  });
+
+  wrap.appendChild(screen);
+  return wrap;
+}
