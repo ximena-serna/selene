@@ -53,6 +53,7 @@ async function loadAll() {
       const pSnap = await getDocs(query(collection(db, 'grupos', g.id, 'clientes', cd.id, 'pagos'), orderBy('fecha')));
       const pagos = pSnap.docs.map(p => ({
         id: p.id, monto: p.data().monto,
+        multa: p.data().multa ?? 0,
         fecha: p.data().fecha.toDate(),
         numeroPago: p.data().numeroPago ?? null,
         esAnticipo: p.data().esAnticipo ?? false,
@@ -79,7 +80,8 @@ async function reloadGroup(gid) {
   await Promise.all(cSnap.docs.map(async (cd) => {
     const pSnap = await getDocs(query(collection(db, 'grupos', gid, 'clientes', cd.id, 'pagos'), orderBy('fecha')));
     const pagos = pSnap.docs.map(p => ({
-      id: p.id, monto: p.data().monto, fecha: p.data().fecha.toDate(),
+      id: p.id, monto: p.data().monto, multa: p.data().multa ?? 0,
+      fecha: p.data().fecha.toDate(),
       numeroPago: p.data().numeroPago ?? null, esAnticipo: p.data().esAnticipo ?? false,
       hora: p.data().hora ?? '', cuenta: p.data().cuenta ?? '',
     }));
@@ -147,10 +149,10 @@ async function saveClient(gid, cid, data) {
   set({ modal: null });
 }
 
-async function savePago(gid, cid, monto, fechaStr, numeroPago, esAnticipo, hora, cuenta) {
+async function savePago(gid, cid, monto, fechaStr, numeroPago, esAnticipo, hora, cuenta, multa=0) {
   set({ loading: true });
   await addDoc(collection(db, 'grupos', gid, 'clientes', cid, 'pagos'), {
-    monto, numeroPago: numeroPago ?? null, esAnticipo: !!esAnticipo,
+    monto, multa: multa || 0, numeroPago: numeroPago ?? null, esAnticipo: !!esAnticipo,
     fecha: Timestamp.fromDate(new Date(fechaStr + 'T12:00:00')),
     hora: hora || '', cuenta: cuenta || '',
     registradoPor: S.user.email, creadoEn: serverTimestamp()
@@ -458,10 +460,10 @@ function rClient() {
     </div>
     <div class="info-grid">
       <div class="info-box"><div class="iv num">${formatMoney(c.total)}</div><div class="il">Total</div></div>
-      <div class="info-box"><div class="iv num">${formatMoney(est.totalPagado)}</div><div class="il">Pagado</div></div>
-      <div class="info-box" style="${est.multa>0?'background:var(--alert-soft);':''}">
-        <div class="iv num" style="color:${est.multa>0?'var(--alert)':'var(--ink)'}">${formatMoney(est.multa)}</div>
-        <div class="il">Multa</div>
+      <div class="info-box"><div class="iv num">${formatMoney(est.abonoProducto)}</div><div class="il">Abonado</div></div>
+      <div class="info-box" style="${est.multaPendiente>0?'background:var(--alert-soft);':''}">
+        <div class="iv num" style="color:${est.multaPendiente>0?'var(--alert)':'var(--ink)'}">${formatMoney(est.multaPendiente)}</div>
+        <div class="il">Multa pend.</div>
       </div>
     </div>
     ${est.inicioSemana1?`<div class="hint" style="border-top:1px solid var(--line);padding-top:10px;margin-top:4px;">
@@ -487,10 +489,11 @@ function rClient() {
     [...c.pagos].sort((a,b)=>b.fecha-a.fecha).forEach(p => {
       const row = el('div',{className:'history-row'});
       const lbl = p.esAnticipo?'Anticipo':p.numeroPago?'Pago #'+p.numeroPago:'Pago';
+      const multaLabel = p.multa>0 ? ` (incl. multa ${formatMoney(p.multa)})` : '';
       const meta = [p.hora,p.cuenta].filter(Boolean).join(' · ');
       const delBtn2 = el('button',{className:'del-btn'},'×');
       delBtn2.onclick = e => { e.stopPropagation(); set({modal:{type:'confirmDeletePago',data:{pago:p,clienteId:c.id}}}); };
-      row.innerHTML=`<div><div class="hl">${lbl}</div><div class="hd">${formatFecha(p.fecha)}${meta?' · '+meta:''}</div></div><div style="display:flex;align-items:center;gap:8px;"><div class="hr num">${formatMoney(p.monto)}</div></div>`;
+      row.innerHTML=`<div><div class="hl">${lbl}${multaLabel}</div><div class="hd">${formatFecha(p.fecha)}${meta?' · '+meta:''}</div></div><div style="display:flex;align-items:center;gap:8px;"><div class="hr num">${formatMoney(p.monto)}</div></div>`;
       row.querySelector('div:last-child').appendChild(delBtn2);
       histCard.appendChild(row);
     });
@@ -633,7 +636,8 @@ function rModal() {
             <div class="gap-row">
               <div class="field"><label>Hora</label><input type="time" id="mh"></div>
               <div class="field"><label>Cuenta</label><input type="text" id="mc3" placeholder="BBVA 1234"></div>
-            </div>`;
+            </div>
+            <div class="field"><label>Multa incluida en este pago ($)</label><input type="number" id="mmu" placeholder="0" value="0"></div>`;
           const cb=el('button',{className:'btn btn-primary btn-block'},'Continuar');
           cb.onclick=()=>{
             const m=parseFloat(body.querySelector('#mm').value);
@@ -642,8 +646,9 @@ function rModal() {
             const esA=body.querySelector('#ma').value==='si';
             const hora=body.querySelector('#mh').value;
             const cuenta=body.querySelector('#mc3').value;
+            const multa=parseFloat(body.querySelector('#mmu').value)||0;
             if(!m||m<=0){showToast('Ingresa un monto');return;}
-            ps.propuesta={monto:m,fecha:f,confianza:'manual',notas:'',numeroPago:esA?null:n,esAnticipo:esA,hora,cuenta};
+            ps.propuesta={monto:m,fecha:f,confianza:'manual',notas:'',numeroPago:esA?null:n,esAnticipo:esA,hora,cuenta,multa};
             render2();
           };
           body.appendChild(cb);
@@ -669,7 +674,8 @@ function rModal() {
           <div class="gap-row">
             <div class="field"><label>Hora</label><input type="time" id="ch" value="${p.hora||''}"></div>
             <div class="field"><label>Cuenta</label><input type="text" id="cc" value="${p.cuenta||''}" placeholder="BBVA 1234"></div>
-          </div>`;
+          </div>
+          <div class="field"><label>Multa incluida en este pago ($)</label><input type="number" id="cmu" value="${p.multa??0}" placeholder="0"></div>`;
         if(p.nombreDetectado) body.innerHTML+=`<div class="hint">Nombre en comprobante: <strong>${p.nombreDetectado}</strong></div>`;
         const cfb=el('button',{className:'btn btn-primary btn-block',style:'margin-top:10px;'},'Confirmar y guardar pago');
         cfb.onclick=async()=>{
@@ -679,11 +685,12 @@ function rModal() {
           const numeroPago=esA3?null:(parseInt(body.querySelector('#cn').value)||null);
           const hora=body.querySelector('#ch').value;
           const cuenta=body.querySelector('#cc').value;
+          const multa=parseFloat(body.querySelector('#cmu').value)||0;
           const cid=ps.clienteId;
           if(!cid){showToast('Selecciona un cliente');return;}
           if(!monto||monto<=0){showToast('Monto inválido');return;}
           if(!fecha){showToast('Selecciona una fecha');return;}
-          await savePago(g.id,cid,monto,fecha,numeroPago,esA3,hora,cuenta);
+          await savePago(g.id,cid,monto,fecha,numeroPago,esA3,hora,cuenta,multa);
         };
         body.appendChild(cfb);
         const rb2=el('button',{className:'btn btn-ghost btn-block',style:'margin-top:6px;'},'Volver a intentar');
