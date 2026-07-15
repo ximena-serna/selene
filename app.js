@@ -64,7 +64,9 @@ async function loadAll() {
         { total: cd.data().total, plazoSemanas: g.plazoSemanas || 10 },
         pagos, { multaPorDia: g.multaPorDia || 35 }
       );
-      g.clientes.push({ id: cd.id, ...cd.data(), pagos, est });
+      const notasSnap = await getDocs(query(collection(db, 'grupos', g.id, 'clientes', cd.id, 'notas'), orderBy('fecha', 'desc')));
+      const notas = notasSnap.docs.map(n => ({ id: n.id, ...n.data(), fecha: n.data().fecha?.toDate() }));
+      g.clientes.push({ id: cd.id, ...cd.data(), pagos, notas, est });
     }));
     g.clientes.sort((a,b) => a.nombre.localeCompare(b.nombre));
   }));
@@ -89,7 +91,9 @@ async function reloadGroup(gid) {
       { total: cd.data().total, plazoSemanas: g.plazoSemanas || 10 },
       pagos, { multaPorDia: g.multaPorDia || 35 }
     );
-    clientes.push({ id: cd.id, ...cd.data(), pagos, est });
+    const notasSnap2 = await getDocs(query(collection(db, 'grupos', gid, 'clientes', cd.id, 'notas'), orderBy('fecha', 'desc')));
+    const notas2 = notasSnap2.docs.map(n => ({ id: n.id, ...n.data(), fecha: n.data().fecha?.toDate() }));
+    clientes.push({ id: cd.id, ...cd.data(), pagos, notas: notas2, est });
   }));
   clientes.sort((a,b) => a.nombre.localeCompare(b.nombre));
   g.clientes = clientes;
@@ -146,6 +150,25 @@ async function saveClient(gid, cid, data) {
   else await addDoc(collection(db, 'grupos', gid, 'clientes'), data);
   await reloadGroup(gid);
   showToast(cid ? 'Cliente actualizado ✓' : 'Cliente agregado ✓');
+  set({ modal: null });
+}
+
+async function saveNota(gid, cid, texto, tipo='manual') {
+  await addDoc(collection(db, 'grupos', gid, 'clientes', cid, 'notas'), {
+    texto, tipo, // 'manual' o 'ia'
+    fecha: Timestamp.fromDate(new Date()),
+    autor: S.user.email,
+    creadoEn: serverTimestamp()
+  });
+  await reloadGroup(gid);
+  showToast('Nota guardada ✓');
+  set({ modal: null });
+}
+
+async function deleteNota(gid, cid, nid) {
+  await deleteDoc(doc(db, 'grupos', gid, 'clientes', cid, 'notas', nid));
+  await reloadGroup(gid);
+  showToast('Nota eliminada');
   set({ modal: null });
 }
 
@@ -436,7 +459,10 @@ function rClient() {
   delBtn.onclick = () => set({modal:{type:'confirmDeleteClient',data:c}});
   const msgBtn = el('button',{className:'btn btn-white btn-sm'},'💬');
   msgBtn.onclick = () => set({modal:{type:'mensajeCobro',data:c}});
-  wrap.appendChild(topbar(c?.nombre||'', ()=>set({view:'group'}), [msgBtn,editBtn,delBtn]));
+  const notaBtn = el('button',{className:'btn btn-white btn-sm'},'📝');
+  notaBtn.title='Notas';
+  notaBtn.onclick = () => set({modal:{type:'notas',data:c}});
+  wrap.appendChild(topbar(c?.nombre||'', ()=>set({view:'group'}), [notaBtn,msgBtn,editBtn,delBtn]));
 
   if (!c) { wrap.appendChild(el('div',{className:'page'})); return wrap; }
 
@@ -499,6 +525,27 @@ function rClient() {
     });
   }
   screen.appendChild(histCard);
+
+  // Notas section
+  if (c.notas && c.notas.length > 0) {
+    screen.appendChild(el('div',{className:'section-label'},'📝 Notas y seguimiento'));
+    const notasCard = el('div',{className:'card card-body'});
+    c.notas.forEach(n => {
+      const row = el('div',{className:'history-row'});
+      const tipoLabel = n.tipo === 'ia' ? '🤖 ' : '✍️ ';
+      const delBtn2 = el('button',{className:'del-btn'},'×');
+      delBtn2.onclick = e => { e.stopPropagation(); deleteNota(get.grupo()?.id, c.id, n.id); };
+      row.innerHTML = `<div><div class="hl">${tipoLabel}${n.texto}</div><div class="hd">${formatFecha(n.fecha)} · ${n.autor||''}</div></div><div></div>`;
+      row.querySelector('div:last-child').appendChild(delBtn2);
+      notasCard.appendChild(row);
+    });
+    screen.appendChild(notasCard);
+  }
+
+  const addNotaBtn = el('button',{className:'btn btn-secondary btn-block',style:'margin-top:10px;'},'📝 Agregar nota');
+  addNotaBtn.onclick = () => set({modal:{type:'notas',data:c}});
+  screen.appendChild(addNotaBtn);
+
   wrap.appendChild(screen);
   return wrap;
 }
@@ -734,6 +781,65 @@ function rModal() {
     const c3=el('button',{className:'btn btn-secondary'},'Cancelar');c3.onclick=()=>set({modal:null});
     const d3=el('button',{className:'btn btn-danger'},'Sí, eliminar');d3.onclick=()=>deletePago(get.grupo()?.id,clienteId,pago.id);
     gap.append(c3,d3);sheet.appendChild(gap);
+  }
+
+
+  else if (type === 'notas') {
+    const c = data;
+    const g = get.grupo();
+    sheet.innerHTML += `<div class="modal-title">📝 Nota para ${c.nombre.split(' ')[0]}</div>`;
+
+    // Manual note
+    const field = el('div',{className:'field'});
+    field.innerHTML = `<label>Escribe la nota</label><textarea id="nota-txt" rows="3" style="width:100%;padding:10px 13px;border:1.5px solid var(--line);border-radius:8px;background:#fff;resize:vertical;" placeholder="Ej: No puede pagar esta semana, paga doble la próxima. / Pagó de más, se aplica a siguiente semana..."></textarea>`;
+    sheet.appendChild(field);
+
+    const gap = el('div',{className:'gap-row'});
+    const manualBtn = el('button',{className:'btn btn-primary'},  '💾 Guardar nota');
+    manualBtn.onclick = async () => {
+      const txt = sheet.querySelector('#nota-txt').value.trim();
+      if (!txt) { showToast('Escribe algo antes de guardar'); return; }
+      await saveNota(g.id, c.id, txt, 'manual');
+    };
+
+    const aiBtn = el('button',{className:'btn btn-secondary'}, '🤖 Analizar con IA');
+    aiBtn.onclick = async () => {
+      const txt = sheet.querySelector('#nota-txt').value.trim();
+      if (!txt) { showToast('Escribe la situación primero'); return; }
+      aiBtn.disabled = true;
+      aiBtn.innerHTML = '<div class="spinner spinner-blue"></div>';
+      try {
+        const est = c.est;
+        const context = `Cliente: ${c.nombre}. Producto: ${c.producto}. Total: ${c.total}. Abonado: ${est.abonoProducto}. Multa pendiente: ${est.multaPendiente}. Semanas transcurridas: ${est.semanasTranscurridas}. Estado: ${est.estado}.`;
+        const prompt = `Eres asistente de una vendedora de ahorros grupales por Facebook. El contexto del cliente es: ${context}. La situación reportada es: "${txt}". Genera una nota concisa (máximo 2 oraciones) que resuma la situación y sugiera un seguimiento específico. Sé práctica y directa.`;
+        const resp = await fetch('/.netlify/functions/claude-proxy', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
+        });
+        const data2 = await resp.json();
+        const textoIA = data2.content?.find(b => b.type === 'text')?.text || txt;
+        sheet.querySelector('#nota-txt').value = textoIA;
+        showToast('IA mejoró la nota ✓');
+      } catch { showToast('Error con IA, guarda manual'); }
+      aiBtn.disabled = false;
+      aiBtn.innerHTML = '🤖 Analizar con IA';
+    };
+    gap.append(manualBtn, aiBtn);
+    sheet.appendChild(gap);
+
+    if (c.notas && c.notas.length > 0) {
+      const lbl = el('div',{className:'section-label',style:'margin-top:16px;'},'Historial de notas');
+      sheet.appendChild(lbl);
+      const histNotas = el('div',{className:'card card-body',style:'max-height:200px;overflow-y:auto;'});
+      c.notas.forEach(n => {
+        const row = el('div',{className:'history-row'});
+        const tipoLabel = n.tipo === 'ia' ? '🤖 ' : '✍️ ';
+        row.innerHTML = `<div><div class="hl" style="font-size:13px;">${tipoLabel}${n.texto}</div><div class="hd">${formatFecha(n.fecha)}</div></div>`;
+        histNotas.appendChild(row);
+      });
+      sheet.appendChild(histNotas);
+    }
   }
 
   overlay.appendChild(sheet);
